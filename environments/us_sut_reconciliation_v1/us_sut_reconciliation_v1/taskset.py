@@ -63,7 +63,9 @@ class UsSutReconciliationTask(vf.Task[UsSutReconciliationData]):
 
     def _prf(self, trace: vf.Trace) -> tuple[float, float, float]:
         answer = self._answer(trace)
-        predicted = fault_pairs(answer.get("faults") if answer else None)
+        if answer is None:
+            return 0.0, 0.0, 0.0
+        predicted = fault_pairs(answer.get("faults"))
         gold = fault_pairs(self.data.expected["faults"])
         if not gold and not predicted:
             return 1.0, 1.0, 1.0

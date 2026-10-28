@@ -60,9 +60,9 @@ def main(dirs: list[str]) -> None:
     for d in dirs:
         rows = load(Path(d))
         for r in rows:
-            exp, ans = r["task"]["expected"], lenient(r["text"]) or {}
-            ok = [to_cents(ans.get(f)) == to_cents(exp[f]) for f in RETURN_FIELDS]
-            r["l_f1"] = f1(fault_pairs(ans.get("faults")), fault_pairs(exp["faults"]))
+            exp, ans = r["task"]["expected"], lenient(r["text"])
+            ok = [ans is not None and to_cents(ans.get(f)) == to_cents(exp[f]) for f in RETURN_FIELDS]
+            r["l_f1"] = f1(fault_pairs(ans.get("faults")), fault_pairs(exp["faults"])) if ans is not None else 0.0
             r["l_fields"] = sum(ok) / len(ok)
             r["l_reward"] = 0.6 * all(ok) + 0.4 * r["l_f1"]
         m = lambda k: mean(r.get(k, 0.0) for r in rows)
