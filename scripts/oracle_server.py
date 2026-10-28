@@ -1,0 +1,78 @@
+"""OpenAI-compatible stub policies for reference baselines, served to `vf-eval`.
+
+  oracle - answers with the programmatic ground truth; every rollout should score 1.0
+           (smoke test of the wiring vf-eval -> harness -> rewards).
+  naive  - files the ledger as recorded: sums every sale line and the recorded tax, accrues
+           no use tax, flags no faults (an un-audited bookkeeper's return).
+
+Run: python scripts/oracle_server.py <port> [oracle|naive]
+"""
+
+import json
+import re
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from decimal import Decimal
+
+from us_sut_reconciliation_v1.ledger import EXEMPT_CATEGORIES, Ledger, Row, reconcile
+
+POLICY = sys.argv[2] if len(sys.argv) > 2 else "oracle"
+
+
+def naive(ledger: Ledger) -> dict:
+    sales = [r for r in ledger.rows if r.type == "sale"]
+    gross = sum((Decimal(r.gross_amount) for r in sales), Decimal("0"))
+    exempt = sum((Decimal(r.gross_amount) for r in sales
+                  if r.category in EXEMPT_CATEGORIES or r.tax_exempt_claimed), Decimal("0"))
+    tax = sum((Decimal(r.tax_collected_or_paid) for r in sales), Decimal("0"))
+    return {"gross_sales": f"{gross:.2f}", "exempt_sales": f"{exempt:.2f}", "taxable_sales": f"{gross - exempt:.2f}",
+            "sales_tax_due": f"{tax:.2f}", "use_tax_due": "0.00", "net_remittance": f"{tax:.2f}", "faults": {}}
+
+
+def ledger_from_prompt(text: str) -> Ledger:
+    year, quarter = map(int, re.search(r"Filing period: (\d{4}) Q(\d)", text).groups())
+    business_zip = re.search(r"business location .*?ZIP (\d{5})", text).group(1)
+    csv = text.split("Ledger (CSV):\n", 1)[1].strip().splitlines()
+    cols = csv[0].split(",")
+    rows = []
+    for line in csv[1:]:
+        values = dict(zip(cols, line.split(",")))
+        values["tax_exempt_claimed"] = values["tax_exempt_claimed"] == "true"
+        rows.append(Row(**values))
+    return Ledger(seed=0, year=year, quarter=quarter, business_zip=business_zip, rows=rows)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        user = next(m for m in body["messages"] if m["role"] == "user")
+        content = user["content"] if isinstance(user["content"], str) else user["content"][0]["text"]
+        answer = f"<answer>\n{json.dumps((naive if POLICY == "naive" else reconcile)(ledger_from_prompt(content)))}\n</answer>"
+        created, model = int(time.time()), body.get("model")
+        if not body.get("stream"):
+            out = {
+                "id": "oracle", "object": "chat.completion", "created": created, "model": model,
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": answer}}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+            return self._send("application/json", json.dumps(out).encode())
+        chunk = {"id": "oracle", "object": "chat.completion.chunk", "created": created, "model": model}
+        events = [
+            {**chunk, "choices": [{"index": 0, "delta": {"role": "assistant", "content": answer}, "finish_reason": None}]},
+            {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}},
+        ]
+        sse = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+        self._send("text/event-stream", sse.encode())
+
+    def _send(self, content_type: str, data: bytes):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+if __name__ == "__main__":
+    HTTPServer(("127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 8099), Handler).serve_forever()
