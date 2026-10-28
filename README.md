@@ -9,4 +9,6 @@ Accounting and tax-compliance RL environments for Prime Intellect's
 
 - `scripts/oracle_server.py` serves reference policies (ground-truth oracle, naive bookkeeper) through an OpenAI-compatible endpoint.
 - `scripts/summarize.py` turns `vf-eval` run dirs into results tables.
+- `scripts/push_run.py` uploads a finished `vf-eval --no-push` run to Prime Evals.
+- Published on the Environments Hub as [`tarive/us-sut-reconciliation-v1`](https://app.primeintellect.ai/dashboard/environments/tarive/us-sut-reconciliation-v1).
 - [`results/`](results/README.md) holds the published eval runs.
