@@ -7,7 +7,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from statistics import mean
+from statistics import mean, pstdev
 
 from us_sut_reconciliation_v1.taskset import RETURN_FIELDS, fault_pairs, parse_answer, to_cents
 
@@ -52,10 +52,22 @@ def load(run_dir: Path) -> list[dict]:
     return rows
 
 
+def rollout_std(rows: list[dict], key: str) -> str:
+    """Std (population) across rollout means: the k-th episode of each task is rollout k. '-' with one rollout."""
+    seen: Counter = Counter()
+    by_rollout: dict[int, list[float]] = {}
+    for r in rows:
+        k = seen[r["task"]["idx"]]
+        seen[r["task"]["idx"]] += 1
+        by_rollout.setdefault(k, []).append(r.get(key, 0.0))
+    means = [mean(v) for v in by_rollout.values()]
+    return f"{pstdev(means):.3f}" if len(means) > 1 else "-"
+
+
 def main(dirs: list[str]) -> None:
-    print("| run | n | reward | return_correct | fault_audit (F1) | fault P | fault R | fields_correct | parsed "
+    print("| run | n | reward | reward σ† | return_correct | fault_audit (F1) | fault P | fault R | fields_correct | parsed "
           "| lenient reward* | lenient F1* | lenient fields* |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     per_code: dict[str, tuple[Counter, Counter]] = {}
     for d in dirs:
         rows = load(Path(d))
@@ -66,7 +78,7 @@ def main(dirs: list[str]) -> None:
             r["l_fields"] = sum(ok) / len(ok)
             r["l_reward"] = 0.6 * all(ok) + 0.4 * r["l_f1"]
         m = lambda k: mean(r.get(k, 0.0) for r in rows)
-        print(f"| {Path(d).name} | {len(rows)} | {m('reward'):.3f} | {m('return_correct'):.3f} | {m('fault_audit'):.3f} "
+        print(f"| {Path(d).name} | {len(rows)} | {m('reward'):.3f} | {rollout_std(rows, 'reward')} | {m('return_correct'):.3f} | {m('fault_audit'):.3f} "
               f"| {m('fault_precision'):.3f} | {m('fault_recall'):.3f} | {m('fields_correct'):.3f} | {m('answer_parsed'):.3f} "
               f"| {m('l_reward'):.3f} | {m('l_f1'):.3f} | {m('l_fields'):.3f} |")
         gold_c, hit_c = Counter(), Counter()
@@ -78,6 +90,7 @@ def main(dirs: list[str]) -> None:
             hit_c.update(code for _, code in gold & pred)
         per_code[Path(d).name] = (gold_c, hit_c)
     codes = sorted({c for g, _ in per_code.values() for c in g})
+    print("\n† Std across the per-rollout mean rewards (`-r` > 1 only); n counts episodes (tasks × rollouts).")
     print("\n\\* Diagnostic only: also accepts a bare JSON object when the `<answer>` tags are missing.")
     print("\nPer-fault recall, lenient parse (hits / gold):\n")
     print("| run | " + " | ".join(codes) + " |")
